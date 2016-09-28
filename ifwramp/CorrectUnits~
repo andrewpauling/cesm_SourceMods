@@ -1,0 +1,2 @@
+The freshwater flux is computed in subroutine set_fwf_interior in file forcing_fwf_interior.F90
+This subroutine is sent variable S_SOURCE as input. The subroutine then computes the interior freshwater flux and adds it to S_SOURCE. Thus we want our freshwater flux term to have the same units as S_SOURCE that is input. 

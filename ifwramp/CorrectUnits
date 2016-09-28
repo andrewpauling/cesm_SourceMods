@@ -1,0 +1,18 @@
+The freshwater flux is set up in subroutine set_fwf_interior in file forcing_fwf_interior.F90
+This subroutine is sent variable S_SOURCE as input. The subroutine then computes the interior freshwater flux and adds it to S_SOURCE. Thus we want our freshwater flux term to have the same units as S_SOURCE that is input. 
+
+Subroutine  set_fwf_interior is called in baroclinic.F90 at line 1870. The salinity source in baroclinic.F90 is called WORKN(:,:,2)
+
+Note that the index 2 is for salinity (1 = temperature) in variables that are accociated with "tracers". Temperature and salinity are tracers.
+
+Note that at line 1897 in baroclinic.F90 WORKN is added to FT
+
+baroclinic.F90 lines 1700 and 1701 indicate that FT and WORKN are used to compute time derivatives of the tracers
+      FT,                &! sum of terms in dT/dt for the nth tracer
+      WORKN               ! work array used for various dT/dt terms 
+
+baroclinic.F90 line 1935 is 
+               TNEW(:,:,1,n) = c2dtt(1)*FT(:,:,n) - etc.
+which to me says the updated tracer is some delta time * FT 
+
+This is why I think FT and WORKN and S_SOURCE should be in units of salinity divided by time. The  model salinity units are g/g (g of salt per g of water, so convert to ppt or psu by dividing by 1000)

@@ -1,0 +1,32 @@
+edit user_nl_pop2 in the casedir so it has
+
+&forcing_fwf_interior_nml
+   fwf_interior_formulation       = 'hosing'
+   fwf_interior_data_type         = 'monthly'
+   fwf_interior_interp_type       = 'linear'
+   fwf_interior_interp_freq       = 'every-timestep'
+   fwf_interior_filename = '/gpfs1m/projects/uoo00015/SourceMods_3dhoseideas/src.pop2/allzeros_interiorhosing_gx1v6.nc'
+   fwf_interior_file_fmt          = 'nc'
+   fwf_interior_data_renorm(1)    = 1.0
+   fwf_interior_data_inc          = 1.0e20
+   fwf_interior_interp_inc        = 1.0e20
+   fwf_interior_max_level         = 0
+/
+
+
+adding this option to a new model version will require editing
+cesm1_2_0/models/ocn/pop2/bld/namelist_files/namelist_definition_pop2.xml
+so that fwf_interior_formulation has the hosing option, etc
+
+<entry
+id="fwf_interior_formulation"
+type="char*256"
+category="forcing"
+group="forcing_fwf_nml"
+valid_values="restoring,bulk-NCEP,partially-coupled,hosing" >
+Surface fresh water flux formulation.
+
+Valid Values: 'restoring', 'bulk-NCEP', 'partially-coupled', 'hosing'
+LANL Default: 'restoring'
+CESM Default: 'restoring' or 'partially-coupled', depending on configuration
+</entry>

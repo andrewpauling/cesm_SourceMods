@@ -1,0 +1,60 @@
+netcdf allzeros_interiorhosing_gx1v6 {
+dimensions:
+	Y = 384 ;
+	X = 320 ;
+	time = 12 ;
+	Z = 60 ;
+variables:
+	int KMT(Y, X) ;
+		KMT:units = "unitless" ;
+		KMT:long_name = "k Index of Deepest Grid Cell on T Grid" ;
+		KMT:coordinates = "TLONG TLAT" ;
+	int REGION_MASK(Y, X) ;
+		REGION_MASK:units = "Basin Index" ;
+		REGION_MASK:long_name = "basin index number (signed integers)" ;
+		REGION_MASK:coordinates = "TLONG TLAT" ;
+	float TAREA(Y, X) ;
+		TAREA:units = "centimeter^2" ;
+		TAREA:long_name = "area of T cells" ;
+		TAREA:coordinates = "TLONG TLAT" ;
+	float TLAT(Y, X) ;
+		TLAT:units = "degrees_north" ;
+		TLAT:long_name = "Latitude (T grid)" ;
+	float TLONG(Y, X) ;
+		TLONG:units = "degrees_east" ;
+		TLONG:long_name = "Longitude (T grid)" ;
+	float ULAT(Y, X) ;
+		ULAT:units = "degrees_north" ;
+		ULAT:long_name = "Latitude (U grid)" ;
+	float ULONG(Y, X) ;
+		ULONG:units = "degrees_east" ;
+		ULONG:long_name = "Longitude (U grid)" ;
+	float X(X) ;
+	float Y(Y) ;
+	float time(time) ;
+		time:long_name = "time" ;
+		time:units = "days since 0078-12-01 00:00:00" ;
+	float FRESHWATER(time, Z, Y, X) ;
+		FRESHWATER:coordinates = "TLONG TLAT z_t time" ;
+		FRESHWATER:long_name = "Hosing Freshwater Flux in model salt units per sec" ;
+		FRESHWATER:missing_value = -1.e+34 ;
+		FRESHWATER:time_op = "average" ;
+		FRESHWATER:units = "g/g/s" ;
+	float z_t(Z) ;
+		z_t:coordinates = "z_t" ;
+		z_t:long_name = "Depth of each level" ;
+		z_t:missing_value = -1.e+34 ;
+		z_t:time_op = "average" ;
+		z_t:units = "cm" ;
+	int FWF_MAX_LEVEL(Y, X) ;
+		FWF_MAX_LEVEL:coordinates = "TLONG TLAT" ;
+		FWF_MAX_LEVEL:long_name = "Hosing Freshwater Flux in model salt units per sec" ;
+		FWF_MAX_LEVEL:missing_value = -1.e+34 ;
+		FWF_MAX_LEVEL:time_op = "average" ;
+		FWF_MAX_LEVEL:units = "unitless" ;
+
+// global attributes:
+		:history = "Sat Mar 22 13:49:44 2014: ncks -A smaller.nc interiorhosing_gx1v6.nc\n",
+			"Sat Mar 22 13:49:14 2014: ncap2 -s FWF_MAX_LEVEL=int(FWF_MAX_LEVEL) test.nc smaller.nc" ;
+		:nco_openmp_thread_number = 1 ;
+}

@@ -1,0 +1,23 @@
+The original code (or very nearly so since I started with an older version of some of the code) is at
+/gpfs1m/projects/uoo00015/cesm1_2_0/models/ocn/pop2/source
+
+Standard procedure is to copy code from the main directory to your SourceMods subdirectory and edit it there. This is known as you sandbox.
+
+Try using diff to see what I did for the sfwf code. I also added comments prolifically in this directory. You can also just search the code using terms CMB or hosing for places I modified the sfwf formulation.
+
+I have also made a stab at the fwf_interior in this directory directory. Have a look at this code too.
+
+Notice the general strategy of routines for
+1) initializing the routines, e.g., init_fw_interior
+2) getting the input data when needed, e.g., init_fwf_interior
+3) adding the flux to the model equations, e.g., set_fwf_interior 
+
+There is a lot of horrible code to input and interpolate the data. Try to not dwell on this. It works, so just be careful to use it by analogy and not brake it. I have not taken the time to understand it. Software engineers wrote this stuff, thank goodness.
+
+Note that sfwf forcing had a lot of impacts in set_combined_forcing.F90. I reviewed the code changes in set_combined_forcing (in forcing_coupled.F90) and I think fwf_interior will not affect it. Instead, fwf_interior seems to influence the baroclinic.F90 routine.
+
+
+Note that in this directory the fw flux code is by default off since there are two possible types: sfwf and fwf_interior. They can't both be on, so they are both off. Hence one will have to be turned on with the user_nl_pop2 namelist. 
+
+Note that the input file for fwf_interior should have a 4 dimensional input var (x,y,z,t) with the name: 'FRESHWATER' and a 2d input var (x,y) 'FWF_MAX_LEVEL' that I think can be used to indicate the point below which the fw flux is zero - to speed up input and interpolation. 
+ 
