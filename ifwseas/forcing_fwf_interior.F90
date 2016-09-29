@@ -1,0 +1,649 @@
+ !|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+
+ module forcing_fwf_interior
+! file heavily modified from forcing_s_interior.F90
+
+!BOP
+! !MODULE: forcing_fwf_interior
+!
+! !DESCRIPTION:
+!  Contains routines and variables used for determining the
+!  interior freshwater forcing
+!
+! !REVISION HISTORY:
+!  SVN:$Id: forcing_fwf_interior.F90 12674 2008-10-31 22:21:32Z njn01 $
+!
+! !USES:
+
+   use kinds_mod
+   use blocks
+   use domain
+   use constants
+   use io
+   use forcing_tools
+   use time_management
+   use prognostic
+   use grid
+   use exit_mod
+
+   implicit none
+   private
+   save
+
+! !PUBLIC MEMBER FUNCTIONS:
+
+   public :: init_fwf_interior,      &
+              get_fwf_interior_data, &
+              set_fwf_interior
+
+! !PUBLIC DATA MEMBERS:
+
+   real (r8), public ::       &! public for use in restart
+      fwf_interior_interp_last   ! time last interpolation done
+
+!EOP
+!BOC
+!-----------------------------------------------------------------------
+!
+!  internal module variables
+!
+!-----------------------------------------------------------------------
+
+   real (r8), dimension(:,:,:,:,:), allocatable :: &
+      FWF_INTERIOR_DATA  ! data to use for interior freshwater flux
+
+   integer (int_kind), dimension(:,:,:), allocatable :: &
+      FWF_MAX_LEVEL ! maximum level for applying variable
+                    ! interior freshwater flux
+
+   real (r8), dimension(:,:,:), allocatable :: &
+      FWF_MAX_LEVEL_REAL ! real number version of FWF_MAX_LEVEL
+
+
+   real (r8), dimension(12) :: &
+      fwf_interior_data_time
+
+   real (r8), dimension(20) :: &
+      fwf_interior_data_renorm   ! factors to convert data to model units
+
+   real (r8) ::               &
+      fwf_interior_data_inc,    &! time increment between values of forcing data
+      fwf_interior_data_next,   &! time to be used for the next value of forcing data that is needed
+      fwf_interior_data_update, &! time when new forcing value to be added to interpolation set
+      fwf_interior_interp_inc,  &! time increment between interpolation
+      fwf_interior_interp_next   ! time next interpolation to be done
+
+   integer (int_kind) ::            &
+      fwf_interior_interp_order,      &! order of temporal interpolation
+      fwf_interior_data_time_min_loc, &! index of x_data_time with the minimum forcing time
+      fwf_interior_max_level
+
+   character (char_len) ::    &
+      fwf_interior_data_type,   &! keyword for period of forcing data
+      fwf_interior_filename,    &! name of file containing forcing data
+      fwf_interior_file_fmt,    &! format (bin or nc) of forcing file
+      fwf_interior_interp_freq, &! keyword for period of temporal interpolation
+      fwf_interior_interp_type, &!
+      fwf_interior_data_label,  &!
+      fwf_interior_formulation   !
+
+   character (char_len), dimension(:), allocatable :: &
+      fwf_interior_data_names    ! names for required input data fields
+
+   integer (int_kind), dimension(:), allocatable :: &
+      fwf_interior_bndy_loc,    &! location and field type for ghost
+      fwf_interior_bndy_type     !    cell updates
+
+
+
+!EOC
+!***********************************************************************
+
+ contains
+
+!***********************************************************************
+!BOP
+! !IROUTINE: init_fwf_interior
+! !INTERFACE:
+
+ subroutine init_fwf_interior
+
+! !DESCRIPTION:
+!  Initializes freshwater interior forcing by either calculating or
+!  reading in the 3D freshwater.  Also performs initial book-keeping
+!  concerning when new data is needed for the temporal interpolation
+!  and when the forcing will need to be updated.
+!
+! !REVISION HISTORY:
+!  same as module
+
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+
+   integer (int_kind) :: &
+      n,                 &!
+      nml_error           ! namelist i/o error flag
+
+   character (char_len) :: &
+      forcing_filename,    &! final filename for forcing data
+      long_name             ! long name for input data
+
+   type (datafile) :: &
+      fwf_int_data_file  ! data file descriptor for freshwater interior data
+
+   type (io_field_desc) :: &
+      fwf_int_data_in    ! io field descriptor for input freshwater interior data
+
+   type (io_dim) :: &
+      i_dim, j_dim, &! dimension descriptors for horiz dimensions
+      k_dim          ! dimension descriptor  for vertical levels
+
+   namelist /forcing_fwf_interior_nml/ fwf_interior_formulation,          &
+        fwf_interior_data_type,        fwf_interior_data_renorm,          &
+        fwf_interior_data_inc,         fwf_interior_interp_type,          &
+        fwf_interior_interp_freq,      fwf_interior_interp_inc,           &
+        fwf_interior_filename,             &
+        fwf_interior_file_fmt,         fwf_interior_max_level
+
+!-----------------------------------------------------------------------
+!
+!  read fwf_interior namelist input after setting default values.
+!  do not edit here, instead make changes to namelist in user_nl_pop2
+!
+!-----------------------------------------------------------------------
+
+   fwf_interior_formulation    = 'hosing'
+   fwf_interior_data_type      = 'none'
+   fwf_interior_interp_type    = 'linear'
+   fwf_interior_interp_freq    = 'every-timestep' ! How often to temporally interpolate fresh water flux data to current time.
+   fwf_interior_filename       = 'unknown-fwf_interior'
+   fwf_interior_file_fmt       = 'nc'
+   fwf_interior_data_renorm    = c1 !  convert from X to Y
+
+! These next three are not used but keep for now
+   fwf_interior_data_inc       = 1.e20_r8 ! Increment (hours) between forcing times if fwf_interior_data_type='n-hour', which is not allowed. Hence this is not currently avail
+   fwf_interior_interp_inc     = 1.e20_r8 ! Increment (hours) between interpolation times if fwf_interior_interp_freq='n-hour', which is not allowed. Hence this is not currently avail
+   fwf_interior_max_level      = 0        ! max depth level of input for fwf_interior_data_type = 'analytic', which is not allowed
+
+
+   if (my_task == master_task) then
+      open (nml_in, file=nml_filename, status='old', iostat=nml_error)
+      if (nml_error /= 0) then
+         nml_error = -1
+      else
+         nml_error =  1
+      endif
+      !*** keep reading until find right namelist
+      do while (nml_error > 0)
+         read(nml_in, nml=forcing_fwf_interior_nml,iostat=nml_error)
+      end do
+      if (nml_error == 0) close(nml_in)
+   end if
+
+   call broadcast_scalar(nml_error, master_task)
+   if (nml_error /= 0) then
+     call exit_POP(sigAbort,'ERROR: reading forcing_fwf_interior_nml')
+   endif
+
+   call broadcast_scalar(fwf_interior_formulation,       master_task)
+   call broadcast_scalar(fwf_interior_data_type,         master_task)
+   call broadcast_scalar(fwf_interior_interp_type,       master_task)
+   call broadcast_scalar(fwf_interior_interp_freq,       master_task)
+   call broadcast_scalar(fwf_interior_filename,          master_task)
+   call broadcast_scalar(fwf_interior_file_fmt,          master_task)
+   call broadcast_array (fwf_interior_data_renorm,       master_task)
+
+   call broadcast_scalar(fwf_interior_data_inc,          master_task)
+   call broadcast_scalar(fwf_interior_interp_inc,        master_task)
+   call broadcast_scalar(fwf_interior_max_level, master_task)
+
+!-----------------------------------------------------------------------
+!
+!  convert data_type to 'monthly-calendar' if input is 'monthly'
+!
+!-----------------------------------------------------------------------
+
+   if (fwf_interior_data_type == 'monthly') &
+       fwf_interior_data_type = 'monthly-calendar'
+
+!-----------------------------------------------------------------------
+!
+!  convert interp_type to corresponding integer value.
+!
+!-----------------------------------------------------------------------
+
+   select case (fwf_interior_interp_type)
+   case ('nearest')
+      fwf_interior_interp_order = 1
+
+   case ('linear')
+      fwf_interior_interp_order = 2
+
+   case ('4point')
+      fwf_interior_interp_order = 4
+
+   case default
+      call exit_POP(sigAbort, &
+         'init_fwf_interior: Unknown value for fwf_interior_interp_type')
+
+   end select
+
+!-----------------------------------------------------------------------
+!
+!  set values of the interior fwf array (FWF_INTERIOR_DATA)
+!  depending on the type of fwf data.
+!
+!-----------------------------------------------------------------------
+
+   select case (fwf_interior_data_type)
+
+   case ('none')
+
+      !*** no interior forcing, therefore no interpolation in time is
+      !*** needed, nor are there any new values to be used.
+
+      fwf_interior_data_next = never
+      fwf_interior_data_update = never
+      fwf_interior_interp_freq = 'never'
+
+   case ('annual')
+
+      !*** annual mean climatological freshwater (read in from a file)
+      !*** constant in time, therefore no new values will be needed
+
+      allocate(FWF_INTERIOR_DATA(nx_block,ny_block,km, &
+                               max_blocks_clinic,1))
+
+      allocate(fwf_interior_data_names(1), &
+               fwf_interior_bndy_loc  (1), &
+               fwf_interior_bndy_type (1))
+
+      FWF_INTERIOR_DATA = c0
+      fwf_interior_data_names(1) = 'FRESHWATER' 
+      fwf_interior_bndy_loc  (1) = field_loc_center
+      fwf_interior_bndy_type (1) = field_type_scalar
+
+      forcing_filename = fwf_interior_filename
+
+      fwf_int_data_file = construct_file(fwf_interior_file_fmt,            &
+                                    full_name=trim(forcing_filename),  &
+                                    record_length=rec_type_dbl,        &
+                                    recl_words=nx_global*ny_global)
+
+      call data_set(fwf_int_data_file, 'open_read')
+
+      i_dim = construct_io_dim('i', nx_global)
+      j_dim = construct_io_dim('j', ny_global)
+      k_dim = construct_io_dim('k', km)
+
+      fwf_int_data_in = construct_io_field(                      &
+                         trim(fwf_interior_data_names(1)),       &
+                         dim1=i_dim, dim2=j_dim, dim3=k_dim,             &
+                         field_loc = fwf_interior_bndy_loc(1),   &
+                         field_type = fwf_interior_bndy_type(1), &
+                         d3d_array = FWF_INTERIOR_DATA(:,:,:,:,1))
+
+      call data_set (fwf_int_data_file, 'define', fwf_int_data_in)
+      call data_set (fwf_int_data_file, 'read',   fwf_int_data_in)
+      call data_set (fwf_int_data_file, 'close')
+      call destroy_io_field(fwf_int_data_in)
+      call destroy_file(fwf_int_data_file)
+
+      if (fwf_interior_data_renorm(1) /= c1) &
+         FWF_INTERIOR_DATA = FWF_INTERIOR_DATA*fwf_interior_data_renorm(1)
+
+      fwf_interior_data_next = never
+      fwf_interior_data_update = never
+      fwf_interior_interp_freq = 'never'
+
+      if (my_task == master_task) then
+         write(stdout,blank_fmt)
+         write(stdout,'(a30,a)') ' Interior S Annual file read: ', &
+                                 trim(forcing_filename)
+      endif
+
+   case ('monthly-equal','monthly-calendar')
+
+      !*** monthly mean climatological interior freshwater
+      !*** all 12 months are read from a file. interpolation order
+      !*** may be specified with namelist input.
+
+      allocate(FWF_INTERIOR_DATA(nx_block,ny_block,km,    &
+                               max_blocks_clinic,0:12))
+
+      allocate(fwf_interior_data_names(12), &
+               fwf_interior_bndy_loc  (12), &
+               fwf_interior_bndy_type (12))
+
+      FWF_INTERIOR_DATA = c0
+
+      call find_forcing_times(           fwf_interior_data_time,         &
+                 fwf_interior_data_inc,    fwf_interior_interp_type,       &
+                 fwf_interior_data_next,   fwf_interior_data_time_min_loc, &
+                 fwf_interior_data_update, fwf_interior_data_type)
+
+      forcing_filename = fwf_interior_filename
+      fwf_int_data_file = construct_file(fwf_interior_file_fmt,            &
+                                    full_name=trim(forcing_filename),  &
+                                    record_length=rec_type_dbl,        &
+                                    recl_words=nx_global*ny_global)
+
+      call data_set(fwf_int_data_file, 'open_read')
+
+      i_dim = construct_io_dim('i', nx_global)
+      j_dim = construct_io_dim('j', ny_global)
+      k_dim = construct_io_dim('k', km)
+
+      do n = 1, 12
+         if (n<10) then
+           write(fwf_interior_data_names(n),'(a11,i1)') 'FRESHWATER_',n
+         else
+           write(fwf_interior_data_names(n),'(a11,i2)') 'FRESHWATER_',n
+         endif
+ 
+         fwf_interior_bndy_loc (n) = field_loc_center
+         fwf_interior_bndy_type(n) = field_type_scalar
+
+         fwf_int_data_in = construct_io_field( &
+                         trim(fwf_interior_data_names(n)),       &
+                         dim1=i_dim, dim2=j_dim, dim3=k_dim,             &
+                         field_loc = fwf_interior_bndy_loc(n),   &
+                         field_type = fwf_interior_bndy_type(n), &
+                         d3d_array = FWF_INTERIOR_DATA(:,:,:,:,n))
+
+         call data_set (fwf_int_data_file, 'define', fwf_int_data_in)
+         call data_set (fwf_int_data_file, 'read',   fwf_int_data_in)
+         call destroy_io_field(fwf_int_data_in)
+      enddo
+
+      call data_set (fwf_int_data_file, 'close')
+      call destroy_file(fwf_int_data_file)
+
+      if (fwf_interior_data_renorm(1) /= c1) &
+         FWF_INTERIOR_DATA = FWF_INTERIOR_DATA*fwf_interior_data_renorm(1)
+
+      if (my_task == master_task) then
+         write(stdout,blank_fmt)
+         write(stdout,'(a31,a)') ' Interior S Monthly file read: ', &
+                                 trim(forcing_filename)
+      endif
+
+   case default
+
+     call exit_POP(sigAbort, &
+              'init_fwf_interior: Unknown value for fwf_interior_data_type')
+
+   end select
+
+!-----------------------------------------------------------------------
+!
+!  now check interpolation period (fwf_interior_interp_freq) to set the
+!    time for the next temporal interpolation (fwf_interior_interp_next).
+!
+!  if no interpolation is to be done, set next interpolation time
+!    to a large number so the interior S update test in routine
+!    get_forcing_data will always be false.
+!
+!
+!  if interpolation is to be done every timestep, set next interpolation
+!    time to a large negative number so the interior S update
+!    test in routine set_surface_forcing will always be true.
+!
+!-----------------------------------------------------------------------
+
+   select case (fwf_interior_interp_freq)
+
+   case ('never')
+
+     fwf_interior_interp_next = never
+     fwf_interior_interp_last = never
+     fwf_interior_interp_inc  = c0
+
+   case ('every-timestep')
+
+     fwf_interior_interp_next = always
+     fwf_interior_interp_inc  = c0
+
+   case default
+
+     call exit_POP(sigAbort, &
+        'init_fwf_interior: Unknown value for fwf_interior_interp_freq')
+
+   end select
+
+   if(nsteps_total == 0) fwf_interior_interp_last = thour00
+
+!-----------------------------------------------------------------------
+!
+!  allocate and read in arrays used for variable interior fwf
+!    if necessary.
+!
+!-----------------------------------------------------------------------
+
+
+      allocate(FWF_MAX_LEVEL(nx_block,ny_block,max_blocks_clinic), &
+          FWF_MAX_LEVEL_REAL(nx_block,ny_block,max_blocks_clinic))
+
+      forcing_filename = fwf_interior_filename
+
+      fwf_int_data_file = construct_file(fwf_interior_file_fmt,    &
+                                    full_name=trim(forcing_filename),  &
+                                    record_length=rec_type_dbl,        &
+                                    recl_words=nx_global*ny_global)
+
+      call data_set(fwf_int_data_file, 'open_read')
+
+      i_dim = construct_io_dim('i', nx_global)
+      j_dim = construct_io_dim('j', ny_global)
+
+      fwf_int_data_in = construct_io_field('FWF_MAX_LEVEL',  &
+                       dim1=i_dim, dim2=j_dim,                             &
+                       field_loc = field_loc_center,             &
+                       field_type = field_type_scalar,           &
+                       d2d_array = FWF_MAX_LEVEL_REAL)      
+
+      call data_set (fwf_int_data_file, 'define', fwf_int_data_in)
+      call data_set (fwf_int_data_file, 'read',   fwf_int_data_in)
+      FWF_MAX_LEVEL = nint(FWF_MAX_LEVEL_REAL)  
+      call destroy_io_field(fwf_int_data_in)
+
+!-----------------------------------------------------------------------
+!
+!  echo forcing options to stdout.
+!
+!-----------------------------------------------------------------------
+
+   fwf_interior_data_label = 'Interior Freshwater Forcing'
+   if (my_task == master_task) &
+      write(stdout,"('Time-Dependent Interior Freshwater Forcing enabled')")
+   call echo_forcing_options(fwf_interior_data_type,                     &
+                       fwf_interior_formulation, fwf_interior_data_inc,    &
+                       fwf_interior_interp_freq, fwf_interior_interp_type, &
+                       fwf_interior_interp_inc, fwf_interior_data_label)
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end subroutine init_fwf_interior
+
+!***********************************************************************
+!BOP
+! !IROUTINE: get_fwf_interior_data
+! !INTERFACE:
+
+ subroutine get_fwf_interior_data
+
+! !DESCRIPTION:
+!  Determines whether new interior forcing data is required and
+!  reads the data if necessary.  Also interpolates data to current
+!  time if required.
+!
+! !REVISION HISTORY:
+!  same as module
+
+!EOP
+!BOC
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+
+!-----------------------------------------------------------------------
+!
+!  check if new data is necessary for interpolation.  if yes, then
+!    shuffle indices in SSS and fwf_interior_data_time arrays. also
+!    increment values of fwf_interior_data_time_min_loc,
+!    fwf_interior_data_next and fwf_interior_data_update. 
+!
+!-----------------------------------------------------------------------
+
+   select case(fwf_interior_data_type)
+
+   case ('monthly-equal','monthly-calendar')
+
+      fwf_interior_data_label = 'FWF_INTERIOR Monthly'
+      if (thour00 >= fwf_interior_data_update) then
+         call update_forcing_data(             fwf_interior_data_time,   &
+                 fwf_interior_data_time_min_loc, fwf_interior_interp_type, &
+                 fwf_interior_data_next,         fwf_interior_data_update, &
+                 fwf_interior_data_type,         fwf_interior_data_inc,    &
+                 FWF_INTERIOR_DATA(:,:,:,:,1:12),fwf_interior_data_renorm, &
+                 fwf_interior_data_label,        fwf_interior_data_names,  &
+                 fwf_interior_bndy_loc,          fwf_interior_bndy_type,   &
+                 fwf_interior_filename,          fwf_interior_file_fmt)
+      endif
+
+      if (thour00 >= fwf_interior_interp_next .or. nsteps_run==0) then
+         call interpolate_forcing(FWF_INTERIOR_DATA(:,:,:,:,0),          &
+                                  FWF_INTERIOR_DATA(:,:,:,:,1:12),       &
+                 fwf_interior_data_time,         fwf_interior_interp_type, &
+                 fwf_interior_data_time_min_loc, fwf_interior_interp_freq, &
+                 fwf_interior_interp_inc,        fwf_interior_interp_next, &
+                 fwf_interior_interp_last,       nsteps_run)
+
+         if (nsteps_run /= 0) fwf_interior_interp_next = &
+                              fwf_interior_interp_next + &
+                              fwf_interior_interp_inc
+      endif
+
+   end select
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end subroutine get_fwf_interior_data
+
+!***********************************************************************
+!BOP
+! !IROUTINE: set_fwf_interior
+! !INTERFACE:
+
+ subroutine set_fwf_interior(k,this_block,S_SOURCE)
+
+! !DESCRIPTION:
+!  Computes interior freshwater forcing term (DFWF\_INTERIOR) using
+!  updated and interpolated data.
+!
+! !REVISION HISTORY:
+!  same as module
+
+! !INPUT PARAMETERS:
+
+   integer (int_kind), intent(in) :: &
+      k     ! vertical level index
+
+   type (block), intent(in) :: &
+      this_block   ! block information for this block
+
+! !OUTPUT PARAMETERS:
+
+   real (r8), dimension(nx_block,ny_block), intent(inout) :: &
+      S_SOURCE    ! source terms for freshwater forcing - add restoring
+                  ! to any other source terms
+
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+
+   integer (int_kind) ::  &
+      bid,                &! local block address for this block
+      now                  ! index for location of interpolated data
+
+   real (r8), dimension(nx_block,ny_block) :: &
+      DFWF_INTERIOR    ! interior freshwater restoring term for this block
+                     ! and level
+
+!-----------------------------------------------------------------------
+!
+!  do interior restoring if required (no restoring at surface for any)
+!
+!-----------------------------------------------------------------------
+
+   if (fwf_interior_data_type /= 'none' .and. k > 1) then
+
+!-----------------------------------------------------------------------
+!
+!     set index for location of interpolated data.
+!
+!-----------------------------------------------------------------------
+
+      select case(fwf_interior_data_type)
+
+      case('annual')
+         now = 1
+
+      case ('monthly-equal','monthly-calendar')
+         now = 0
+
+      end select
+
+!-----------------------------------------------------------------------
+!
+!     now compute restoring
+!
+!-----------------------------------------------------------------------
+!CMB I have not thought much about this last part yet
+!CMB probably need to figure out right units
+!CMB I believe the salt units in the model are in g/g 
+!CMB I found in constants.F90 pt_to_salt   = 1.e-3_r8
+!CMB which is just what is needed to convert g/g to ppt
+!CMB Like the model I will call g/g "salt" units
+!CMB Given that the forcing_s_interior routine had
+!CMB units for S_SOURCE of salt per second
+!CMB we need to convert here to the same
+!CMB or we could just insist that the FWF_INTERIOR_DATA
+!CMB have units of salt per second
+
+
+      bid = this_block%local_id
+
+!CMB merge is an intrinsic fortran command that uses the third input
+!CMB as a mask. When true, the LHS is equated to the first inpu
+!CMB when false, the second.
+!CMB When the inputs are arrays, it is done index-wise
+
+      DFWF_INTERIOR = merge( FWF_INTERIOR_DATA(:,:,k,bid,now), &
+                             c0, k <= FWF_MAX_LEVEL(:,:,bid))
+
+      !*** add interior fw forcing term to other source terms
+
+      S_SOURCE = S_SOURCE + DFWF_INTERIOR/dz(k)
+
+   endif ! k=1
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end subroutine set_fwf_interior
+
+!***********************************************************************
+
+ end module forcing_fwf_interior
+
+!|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
